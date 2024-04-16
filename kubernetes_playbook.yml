@@ -1,0 +1,76 @@
+---
+- name: Install Kubernetes components on all nodes
+  hosts: all
+  become: yes
+  tasks:
+    - name: Download kubeadm, kubelet, and kubectl binaries
+      get_url:
+        url: "https://storage.googleapis.com/kubernetes-release/release/v1.29.3/bin/linux/amd64/{{ item }}"
+        dest: "/usr/local/bin/{{ item }}"
+        mode: '0755'
+      loop:
+        - kubeadm
+        - kubelet
+        - kubectl
+
+    - name: Create kubelet systemd service file
+      copy:
+        dest: "/etc/systemd/system/kubelet.service"
+        content: |
+          [Unit]
+          Description=Kubelet
+          Documentation=https://kubernetes.io/docs/
+          After=docker.service
+          Requires=docker.service
+
+          [Service]
+          ExecStart=/usr/local/bin/kubelet
+          Restart=always
+          StartLimitInterval=0
+          RestartSec=10
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+
+    - name: Enable and start kubelet
+      systemd:
+        name: kubelet
+        enabled: yes
+        state: started
+
+- name: Initialize Kubernetes cluster on master node
+  hosts: master
+  become: yes
+  tasks:
+    - name: Initialize the Kubernetes cluster using kubeadm
+      command: kubeadm init --pod-network-cidr=192.168.0.0/16
+      register: kubeadm_init_output
+
+    - name: Create kube config directory
+      file:
+        path: "/home/ubuntu/.kube"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+
+    - name: Copy admin kube config to user's home directory
+      copy:
+        src: "/etc/kubernetes/admin.conf"
+        dest: "/home/ubuntu/.kube/config"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+
+    - name: Install Calico network plugin
+      command: kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+      environment:
+        KUBECONFIG: "/home/ubuntu/.kube/config"
+
+- name: Join Kubernetes worker nodes to the cluster
+  hosts: workers
+  become: yes
+  tasks:
+    - name: Join worker nodes to the cluster
+      command: "{{ hostvars['master'].kubeadm_init_output.stdout_lines[-1] }}"
